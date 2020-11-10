@@ -495,10 +495,13 @@ Error PerfEvents::check(Arguments& args) {
     attr.sample_type = PERF_SAMPLE_CALLCHAIN;
     attr.disabled = 1;
 
-    if (args._ring == RING_USER || !Symbols::haveKernelSymbols()) {
+    if (args._ring == RING_USER) {
         attr.exclude_kernel = 1;
     } else if (args._ring == RING_KERNEL) {
         attr.exclude_user = 1;
+    } else if (!Symbols::haveKernelSymbols()) {
+        Profiler::_instance.updateSymbols(true);
+        attr.exclude_kernel = Symbols::haveKernelSymbols() ? 0 : 1;
     }
 
 #ifdef PERF_ATTR_SIZE_VER5
@@ -575,10 +578,6 @@ void PerfEvents::stop() {
 
 int PerfEvents::getNativeTrace(void* ucontext, int tid, const void** callchain, int max_depth,
                                CodeCache* java_methods, CodeCache* runtime_stubs) {
-    if (max_depth <= 0) {
-        return 0;
-    }
-
     PerfEvent* event = &_events[tid];
     if (!event->tryLock()) {
         return 0;  // the event is being destroyed
@@ -602,11 +601,11 @@ int PerfEvents::getNativeTrace(void* ucontext, int tid, const void** callchain, 
                     u64 ip = ring.next();
                     if (ip < PERF_CONTEXT_MAX) {
                         const void* iptr = (const void*)ip;
-                        callchain[depth++] = iptr;
                         if (java_methods->contains(iptr) || runtime_stubs->contains(iptr) || depth >= max_depth) {
                             // Stop at the first Java frame
                             goto stack_complete;
                         }
+                        callchain[depth++] = iptr;
                     }
                 }
 
@@ -615,25 +614,25 @@ int PerfEvents::getNativeTrace(void* ucontext, int tid, const void** callchain, 
 
                     // Last userspace PC is stored right after branch stack
                     const void* pc = (const void*)ring.peek(bnr * 3 + 2);
-                    callchain[depth++] = pc;
                     if (java_methods->contains(pc) || runtime_stubs->contains(pc) || depth >= max_depth) {
                         goto stack_complete;
                     }
+                    callchain[depth++] = pc;
 
                     while (bnr-- > 0) {
                         const void* from = (const void*)ring.next();
                         const void* to = (const void*)ring.next();
                         ring.next();
 
-                        callchain[depth++] = to;
                         if (java_methods->contains(to) || runtime_stubs->contains(to) || depth >= max_depth) {
                             goto stack_complete;
                         }
+                        callchain[depth++] = to;
 
-                        callchain[depth++] = from;
                         if (java_methods->contains(from) || runtime_stubs->contains(from) || depth >= max_depth) {
                             goto stack_complete;
                         }
+                        callchain[depth++] = from;
                     }
                 }
 

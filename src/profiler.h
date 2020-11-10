@@ -92,9 +92,6 @@ class MethodSample {
 };
 
 
-typedef jboolean JNICALL (*NativeLoadLibraryFunc)(JNIEnv*, jobject, jstring, jboolean);
-typedef void JNICALL (*ThreadSetNativeNameFunc)(JNIEnv*, jobject, jstring);
-
 class FrameName;
 
 enum State {
@@ -140,26 +137,22 @@ class Profiler {
     CodeCache _java_methods;
     NativeCodeCache _runtime_stubs;
     NativeCodeCache* _native_libs[MAX_NATIVE_LIBS];
-    NativeCodeCache* _libjvm;
     volatile int _native_lib_count;
 
-    // Support for intercepting NativeLibrary.load()
+    // Support for intercepting NativeLibrary.load() / NativeLibraries.load()
     JNINativeMethod _load_method;
-    NativeLoadLibraryFunc _original_NativeLibrary_load;
+    void* _original_NativeLibrary_load;
+    void* _trapped_NativeLibrary_load;
     static jboolean JNICALL NativeLibraryLoadTrap(JNIEnv* env, jobject self, jstring name, jboolean builtin);
-    void bindNativeLibraryLoad(JNIEnv* env, NativeLoadLibraryFunc entry);
+    static jboolean JNICALL NativeLibrariesLoadTrap(JNIEnv* env, jobject self, jobject lib, jstring name, jboolean builtin, jboolean jni);
+    void bindNativeLibraryLoad(JNIEnv* env, bool enable);
 
     // Support for intercepting Thread.setNativeName()
-    ThreadSetNativeNameFunc _original_Thread_setNativeName;
+    void* _original_Thread_setNativeName;
     static void JNICALL ThreadSetNativeNameTrap(JNIEnv* env, jobject self, jstring name);
-    void bindThreadSetNativeName(JNIEnv* env, ThreadSetNativeNameFunc entry);
+    void bindThreadSetNativeName(JNIEnv* env, bool enable);
 
     void switchNativeMethodTraps(bool enable);
-
-    jvmtiError (*_JvmtiEnv_GetStackTrace)(void* self, void* thread, jint start_depth, jint max_frame_count,
-                                          jvmtiFrameInfo* frame_buffer, jint* count_ptr);
-
-    const void* (*_CodeCache_find_blob)(const void* address);
 
     void addJavaMethod(const void* address, int length, jmethodID method);
     void removeJavaMethod(const void* address, jmethodID method);
@@ -169,7 +162,7 @@ class Profiler {
     void onThreadEnd(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread);
 
     const char* asgctError(int code);
-    int getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, int tid, bool* stopped_at_java_frame);
+    int getNativeTrace(void* ucontext, ASGCT_CallFrame* frames, int tid);
     int getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max_depth);
     int getJavaTraceJvmti(jvmtiFrameInfo* jvmti_frames, ASGCT_CallFrame* frames, int max_depth);
     int makeEventFrame(ASGCT_CallFrame* frames, jint event_type, jmethodID event);
@@ -186,7 +179,7 @@ class Profiler {
     void updateNativeThreadNames();
     bool excludeTrace(FrameName* fn, CallTraceSample* trace);
     Engine* selectEngine(const char* event_name);
-    Error initJvmLibrary();
+    Error checkJvmCapabilities();
 
   public:
     static Profiler _instance;
@@ -205,11 +198,8 @@ class Profiler {
         _stubs_lock(),
         _java_methods(),
         _runtime_stubs("[stubs]"),
-        _libjvm(NULL),
         _native_lib_count(0),
-        _original_NativeLibrary_load(NULL),
-        _JvmtiEnv_GetStackTrace(NULL),
-        _CodeCache_find_blob(NULL) {
+        _original_NativeLibrary_load(NULL) {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
             _calltrace_buffer[i] = NULL;
@@ -221,8 +211,6 @@ class Profiler {
     time_t uptime()     { return time(NULL) - _start_time; }
 
     ThreadFilter* threadFilter() { return &_thread_filter; }
-
-    NativeCodeCache* jvmLibrary() { return _libjvm; }
 
     void run(Arguments& args);
     void runInternal(Arguments& args, std::ostream& out);
@@ -238,6 +226,7 @@ class Profiler {
     void dumpFlat(std::ostream& out, Arguments& args);
     void recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state = THREAD_RUNNING);
 
+    void updateSymbols(bool kernel_symbols);
     const void* findSymbol(const char* name);
     const void* findSymbolByPrefix(const char* name);
     NativeCodeCache* findNativeLibrary(const void* address);
